@@ -1,0 +1,21 @@
+# Runtime mailbox data, in case a mailbox root is ever created inside this checkout.
+# A mailbox root holds message bodies and session ids: never commit one.
+/mailbox/
+/mail/
+/state/
+/presence/
+/control/
+/config.json
+.lock
+.mailbox-bridge-test-root
+
+# Written by Claude Code beside a mod it loads or tests.
+mod/.claude-plugin/types/
+mod/tsconfig.json
+
+# Python, editors, logs
+__pycache__/
+*.pyc
+*.log
+*.jsonl
+.DS_Store

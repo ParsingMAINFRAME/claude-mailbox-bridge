@@ -1,0 +1,28 @@
+# Development
+
+There is nothing to install: the helper is one standard-library Python file and the mod is one TypeScript hooks module that Claude Code loads as it is.
+
+## Tests
+
+```sh
+python3 test_bridge.py        # the helper, on throwaway directories in the system temp folder, incl. fault injection
+claude plugin validate mod    # static: what Claude Code reads from the mod, and what it would refuse
+claude plugin test mod        # the mod's hooks with files, helper, clock and prompts replaced by stand-ins
+```
+
+The last two need the Claude Code CLI (2.1.287 or newer). They are static or mocked: neither loads the mod into a session or starts a model turn. CI runs only the Python tests.
+
+`claude plugin test` writes `mod/.claude-plugin/types/` and may write `mod/tsconfig.json`; both are ignored by git. To type-check by hand, point a `tsconfig.json` at `mod/hooks`, `mod/tests` and those generated declarations and run `npx -p typescript@5.6 tsc -p <that tsconfig>`.
+
+## Rules for changes
+
+- `bridge.py` is the only writer of mailbox files. The mod reads two directories and runs the helper; keep it that way.
+- No network code, listeners, daemons, credential access or settings changes.
+- The state record is written first and is the commit point. Any new persistent step needs a `checkpoint("...")` label and a row in the crash matrix in `test_bridge.py` (`BOUNDARIES`).
+- Anything that is not proven in a real session is described as unverified in `README.md`. The mocked tests prove the mod's logic, not the engine's behaviour.
+- Hooks-module rules that `claude plugin validate` enforces: spell every `$.noun.method` call in full, pass `$` only to top-level functions in the same file, use string-literal event names, and give `$.env.get` a string-literal name.
+- In `*.test.ts`, stand-ins for `$` operations (`fs.stat`, `fs.list`, `process.run`, `session.id`, `tool.register`, `command.register`, `ui.log`, `ui.status`, `turn.abort`) return `{ value: ... }`; engine events (`session.start`, `turn.start`, `turn.complete`, `tool.check`, `prompt.submit`, `tool.call`) return their plain result; register every `on(...)` stand-in before the first `$` call.
+
+## Do not commit
+
+A mailbox root (`config.json`, `mail/`, `state/`, `presence/`, `control/`), session transcripts, logs, or the generated `mod/.claude-plugin/types/` folder.
