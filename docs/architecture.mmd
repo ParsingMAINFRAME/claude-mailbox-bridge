@@ -1,0 +1,5 @@
+flowchart LR
+    S[External sender<br/>script, bot or agent] -->|write instruction| M[(Local mailbox)]
+    M -->|plugin delivers when idle| C[Claude Code session]
+    C -->|permission-checked reply tool| R[(Correlated reply files)]
+    R -->|sender reads on its own schedule| S

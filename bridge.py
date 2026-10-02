@@ -47,6 +47,10 @@ PLACE = {"queued": "new", "claimed": "claimed", "submitted": "claimed", "acknowl
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{7,63}$")
 SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 MAX_BYTES = 64 * 1024
+MAX_STATE_BYTES = 48 * 1024
+MAX_SUBJECT_BYTES = 512
+MAX_NOTE_BYTES = 200
+MAX_HISTORY = 40
 DEFAULT_TTL_MIN = 24 * 60
 MAX_TTL_MIN = 7 * 24 * 60
 MAX_FUTURE_S = 300
@@ -91,6 +95,73 @@ def checkpoint(label):
     if mode == "raise":
         raise OSError(errno.ENOSPC, "injected write failure")
     os._exit(99)
+
+
+_fault_calls = {}
+
+
+def fault(op):
+    """Test-only: make the nth call of one primitive fail, as a disk would (BRIDGE_FAULT=op:n[:short])."""
+    wanted = os.environ.get("BRIDGE_FAULT")
+    if not wanted or not is_test_root():
+        return None
+    name, _, rest = wanted.partition(":")
+    nth, _, mode = rest.partition(":")
+    if name != op:
+        return None
+    _fault_calls[op] = _fault_calls.get(op, 0) + 1
+    if _fault_calls[op] < int(nth or 1):
+        return None
+    if mode in ("short", "shortok"):  # short: a partial write, then failure; shortok: a partial write, then success
+        if _fault_calls[op] == int(nth or 1):
+            return "short"
+        if mode == "shortok":
+            return None
+    raise OSError(errno.EIO, f"injected {op} failure")
+
+
+def os_write(fd, data):
+    if fault("write") == "short":
+        return os.write(fd, data[:max(1, len(data) // 2)])  # the kernel took only part; the next call fails
+    return os.write(fd, data)
+
+
+def os_fsync(fd):
+    fault("fsync")
+    os.fsync(fd)
+
+
+def os_link(src, dst):
+    fault("link")
+    os.link(src, dst)
+
+
+def os_replace(src, dst):
+    fault("replace")
+    os.replace(src, dst)
+
+
+def os_rename(src, dst):
+    fault("rename")
+    os.rename(src, dst)
+
+
+def clip(text, limit):
+    """Text cut to at most `limit` UTF-8 bytes, control characters flattened, so its stored size is bounded."""
+    flat = "".join(ch if ch.isprintable() else " " for ch in str(text or ""))
+    return flat.encode("utf-8")[:limit].decode("utf-8", "ignore")
+
+
+def cmd_stray(args):
+    """A prompt this bridge had withdrawn or lost track of started a turn anyway. Record it; change no state."""
+    agent, session = wakeable(args.agent), session_of(args)
+    with Lock():
+        record = owned(agent, args.id)
+        record.setdefault("stray_starts", []).append(
+            {"at_utc": iso(now()), "session": session, "aborted": bool(args.aborted), "note": clip(args.note, MAX_NOTE_BYTES)})
+        record["stray_starts"] = record["stray_starts"][-5:]
+        save_state(record)
+        return {"ok": True, "state": record["state"]}
 
 
 def iso(moment):
@@ -145,11 +216,19 @@ def write_tmp(directory, data):
     tmp = directory / f".tmp-{uuid.uuid4().hex}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
+        # os.write may accept fewer bytes than asked: keep going until every byte is in, or fail.
+        view = memoryview(data)
+        while view:
+            written = os_write(fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "write accepted no bytes")
+            view = view[written:]
+        os_fsync(fd)
+        if os.fstat(fd).st_size != len(data):
+            raise OSError(errno.EIO, "file is not the size that was written")
     except BaseException:
         os.close(fd)
-        os.unlink(tmp)
+        os.unlink(tmp)  # a partial file never replaces or becomes anything
         raise
     os.close(fd)
     return tmp
@@ -159,14 +238,21 @@ def write_new(directory, name, data):
     """Publish without ever overwriting: FileExistsError when the name is taken."""
     tmp = write_tmp(directory, data)
     try:
-        os.link(tmp, directory / name)
+        os_link(tmp, directory / name)
     finally:
         os.unlink(tmp)
 
 
 def write_replace(directory, name, value):
-    tmp = write_tmp(directory, (json.dumps(value, indent=2) + "\n").encode())
-    os.replace(tmp, directory / name)
+    data = (json.dumps(value, indent=2) + "\n").encode()
+    if len(data) > MAX_STATE_BYTES:
+        raise Refused(f"record would be {len(data)} bytes; the limit is {MAX_STATE_BYTES}")
+    tmp = write_tmp(directory, data)
+    try:
+        os_replace(tmp, directory / name)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def read_json(path):
@@ -289,7 +375,7 @@ def all_states():
     for name in names_in(directory):
         record = read_json(directory / name)
         if not record or record.get("id") != name[:-5] or record.get("state") not in PLACE:
-            os.rename(directory / name, safe_dir("state", "corrupt") / f"{now().strftime('%Y%m%dT%H%M%S%fZ')}-{name}")
+            os_rename(directory / name, safe_dir("state", "corrupt") / f"{now().strftime('%Y%m%dT%H%M%S%fZ')}-{name}")
             continue
         records.append(normalized(record))
     return records
@@ -300,16 +386,22 @@ def save_state(record, new_state=None, by=None, note=None):
         record["state"] = new_state
         entry = {"state": new_state, "at_utc": iso(now()), "by": by}
         if note:
-            entry["note"] = note[:500]
-        record.setdefault("history", []).append(entry)
+            entry["note"] = clip(note, MAX_NOTE_BYTES)
+        history = record.setdefault("history", [])
+        history.append(entry)
+        if len(history) > MAX_HISTORY:
+            # Keep the first entry and the newest; say how many were dropped rather than grow without bound.
+            dropped = len(history) - MAX_HISTORY
+            record["history_dropped"] = record.get("history_dropped", 0) + dropped
+            record["history"] = history[:1] + history[1 + dropped:]
     write_replace(safe_dir("state"), f"{record['id']}.json", record)
     return record
 
 
 def record_for(envelope):
     return {key: envelope.get(key) for key in
-            ("id", "from", "to", "kind", "correlation_id", "subject", "created_utc", "expires_utc")} | {
-        "state": None, "attempts": [], "session": None, "turn_started": False, "history": []}
+            ("id", "from", "to", "kind", "correlation_id", "created_utc", "expires_utc")} | {
+        "subject": envelope.get("subject", ""), "state": None, "attempts": [], "session": None, "turn_started": False, "history": []}
 
 
 def validate(envelope, agent, filename):
@@ -329,8 +421,14 @@ def validate(envelope, agent, filename):
         raise Refused("unknown kind")
     if not isinstance(envelope.get("body"), str):
         raise Refused("body is not a string")
-    if not isinstance(envelope.get("subject", ""), str):
+    subject = envelope.get("subject", "")
+    if not isinstance(subject, str):
         raise Refused("subject is not a string")
+    try:
+        if len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
+            raise Refused(f"subject is longer than {MAX_SUBJECT_BYTES} bytes")
+    except UnicodeEncodeError:
+        raise Refused("subject is not valid text")
     correlation = envelope.get("correlation_id")
     if not isinstance(correlation, str) or not ID_RE.match(correlation):
         raise Refused("bad or missing correlation_id")
@@ -364,7 +462,7 @@ def locate(agent, name):
 def quarantine(agent, place, name, reason):
     """Set an undeliverable file aside with its reason; its content is never shown to a model."""
     target = f"{now().strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:8]}-{re.sub(r'[^A-Za-z0-9._-]', '_', name)[:80]}"
-    os.rename(box(agent, place) / name, box(agent, "rejected") / target)
+    os_rename(box(agent, place) / name, box(agent, "rejected") / target)
     write_replace(box(agent, "rejected"), target + ".reason.json",
                   {"file": name, "found_in": place, "reason": reason, "at_utc": iso(now())})
 
@@ -379,7 +477,7 @@ def settle(record):
             if extra != wanted:
                 quarantine(agent, extra, name, f"second copy; record says {record['state']}")
     elif found:
-        os.rename(box(agent, found[0]) / name, box(agent, wanted) / name)
+        os_rename(box(agent, found[0]) / name, box(agent, wanted) / name)
         for extra in found[1:]:
             quarantine(agent, extra, name, f"second copy; record says {record['state']}")
     elif record["state"] not in TERMINAL and not record.get("needs_reconciliation"):
@@ -712,8 +810,14 @@ def cmd_begin(args):
                 return {"ok": True, "start": False, "revocable": True, "reason": reason}
         record["attempts"][-1]["outcome"] = "started"
         record["turn_started"] = True
-        save_state(record, "submitted", agent,
-                   "turn started; it could not be withdrawn" if args.force else "a turn started with this message")
+        note = "a turn started with this message"
+        if args.force:
+            # The turn is already running and could not be withdrawn: record it as it is, with what was skipped.
+            skipped = [name for name, hit in (("paused", paused(agent)), ("expired", is_expired(record))) if hit]
+            record["forced_start"] = {"at_utc": iso(now()), "skipped_checks": skipped,
+                                      "reason": clip(args.note, MAX_NOTE_BYTES)}
+            note = "turn started; it could not be withdrawn" + (f" (should have been withheld: {', '.join(skipped)})" if skipped else "")
+        save_state(record, "submitted", agent, note)
         checkpoint("begin:state")
         return {"ok": True, "start": True, "state": "submitted", "changed": True}
 
@@ -748,7 +852,7 @@ def cmd_reply(args):
                     "kind": "ack" if args.state == "acknowledged" else "reply",
                     "correlation_id": record["correlation_id"], "in_reply_to": record["id"],
                     "reply_state": args.state,
-                    "subject": f"{args.state}: {record.get('subject') or record['id']}"[:200],
+                    "subject": clip(f"{args.state}: {record.get('subject') or record['id']}", MAX_SUBJECT_BYTES),
                     "created_utc": iso(created),
                     "expires_utc": iso(created + datetime.timedelta(minutes=MAX_TTL_MIN)), "body": body}
         # Each step is skipped when already done, so repeating the call finishes an interrupted one.
@@ -839,9 +943,11 @@ def cmd_resolve(args):
 
 
 def cmd_fsck(args):
+    if args.agent is not None and args.agent not in AGENTS:
+        raise Refused(f"unknown agent: {args.agent!r}")
     with Lock():
         report = {}
-        for agent in AGENTS:
+        for agent in ([args.agent] if args.agent else AGENTS):
             records = reconcile(agent)
             report[agent] = [{"id": r["id"], "state": r["state"], "problem": r["needs_reconciliation"]}
                              for r in records if r.get("needs_reconciliation")]
@@ -882,7 +988,7 @@ def cmd_status(args):
     for record in shown[:args.limit]:
         report["messages"].append({key: record.get(key) for key in
                                    ("id", "from", "to", "kind", "state", "correlation_id", "subject", "created_utc",
-                                    "expires_utc", "turn_started", "replies", "needs_reconciliation")}
+                                    "expires_utc", "turn_started", "replies", "needs_reconciliation", "forced_start", "stray_starts")}
                                   | {"attempts": len(record.get("attempts", []))})
     return report
 
@@ -931,7 +1037,8 @@ def main(argv=None):
         (("--ttl-minutes",), {"type": int}),
         (("--correlation-id",), {}), (("--id",), {}))
     add("claim", cmd_claim, agent, session)
-    add("begin", cmd_begin, agent, session, ident, (("--force",), {"action": "store_true"}))
+    add("begin", cmd_begin, agent, session, ident, (("--force",), {"action": "store_true"}), (("--note",), {}))
+    add("stray", cmd_stray, agent, session, ident, (("--aborted",), {"type": int, "default": 0}), (("--note",), {}))
     add("release", cmd_release, agent, session, ident, (("--reason",), {}), (("--refund",), {"action": "store_true"}))
     add("reply", cmd_reply, agent, session, ident,
         (("--state",), {"required": True, "choices": ("acknowledged", "completed", "blocked")}), (("--body",), {}))
@@ -941,7 +1048,7 @@ def main(argv=None):
     add("resume", cmd_pause, (("--agent",), {}))
     add("resolve", cmd_resolve, ident, (("--state",), {"required": True, "choices": ("blocked", "failed")}),
         (("--note",), {"required": True}))
-    add("fsck", cmd_fsck)
+    add("fsck", cmd_fsck, (("--agent",), {}))
     add("status", cmd_status, (("--agent",), {}), (("--limit",), {"type": int, "default": 20}))
     add("inbox", cmd_inbox, agent, (("--archive",), {"action": "store_true"}))
 

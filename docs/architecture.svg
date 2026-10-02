@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+<title id="title">Claude Mailbox Bridge — local file handoff</title>
+<desc id="desc">An external sender writes an instruction to a local mailbox. A plugin delivers it to an idle Claude Code session. Its permission-checked reply tool writes correlated reply files, which the sender reads on its own schedule.</desc>
+<defs>
+  <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101426"/><stop offset="1" stop-color="#172035"/></linearGradient>
+  <linearGradient id="accent" x2="1"><stop stop-color="#9C8CFF"/><stop offset="1" stop-color="#6FE3D5"/></linearGradient>
+  <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M 48 0 L 0 0 0 48" fill="none" stroke="#29334E" stroke-width="1" opacity=".35"/></pattern>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto"><path d="M2 2 L10 6 L2 10" fill="none" stroke="#91A4C7" stroke-width="2"/></marker>
+</defs>
+<rect width="1440" height="820" fill="url(#bg)"/><rect width="1440" height="820" fill="url(#grid)"/>
+<rect x="72" y="62" width="6" height="66" rx="3" fill="url(#accent)"/>
+<g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">
+<text x="100" y="92" font-size="18" font-weight="650" letter-spacing="3" fill="#AFA1FF">CLAUDE MAILBOX BRIDGE</text>
+<text x="100" y="150" font-size="42" font-weight="650" fill="#F5F7FF">File in. Work handed off. Reply out.</text>
+<text x="100" y="190" font-size="21" fill="#AAB8D2">A local handoff between your sender and an idle Claude Code session.</text>
+<g stroke="#415172" stroke-width="2" fill="#1C2841">
+ <rect x="100" y="292" width="300" height="174" rx="22"/>
+ <rect x="570" y="292" width="300" height="174" rx="22"/>
+ <rect x="1040" y="292" width="300" height="174" rx="22"/>
+ <rect x="570" y="556" width="300" height="126" rx="22"/>
+</g>
+<g font-size="25" font-weight="600" fill="#F5F7FF" text-anchor="middle">
+ <text x="250" y="365">External sender</text><text x="720" y="365">Local mailbox</text><text x="1190" y="365">Claude Code</text><text x="720" y="605">Reply files</text>
+</g>
+<g font-size="18" fill="#AAB8D2" text-anchor="middle">
+ <text x="250" y="404">script · bot · agent</text><text x="720" y="404">instruction + message ID</text><text x="1190" y="404">takes work when idle</text>
+ <text x="720" y="640">acknowledged · completed · blocked</text>
+</g>
+<g fill="none" stroke="#91A4C7" stroke-width="2.5" marker-end="url(#arrow)">
+ <path d="M400 378 H550"/><path d="M870 378 H1020"/>
+ <path d="M1190 466 V616 H892"/><path d="M570 616 H250 V488"/>
+</g>
+<g font-size="16" fill="#BFCBE2" text-anchor="middle">
+ <text x="478" y="349">write instruction</text><text x="952" y="349">plugin delivers</text>
+ <text x="1060" y="596">reply tool</text><text x="400" y="596">read correlated result</text>
+</g>
+<rect x="100" y="740" width="1240" height="1" fill="#394560"/>
+<text x="100" y="778" font-size="17" fill="#AAB8D2">The sender checks replies on its own schedule. Messages do not grant new permissions.</text>
+<text x="1340" y="778" text-anchor="end" font-size="16" fill="#91E1D2">EXPERIMENTAL</text>
+</g></svg>

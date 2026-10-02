@@ -1,5 +1,6 @@
 {
   "name": "session-mailbox",
   "version": "0.1.0",
+  "author": { "name": "ParsingMAINFRAME" },
   "description": "Wakes an idle Claude Code session when its local file mailbox receives an addressed instruction, and records the session's replies to files the sender can read. Independent and experimental."
 }

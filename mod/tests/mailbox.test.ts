@@ -19,6 +19,7 @@ type World = {
   isDropping: boolean
   isConflict: boolean
   canAbort: boolean
+  forced: Record<string, unknown>
   gate: Record<string, unknown>
   decision: 'allow' | 'ask' | 'deny' | 'throw'
   claimDelayMs: number
@@ -38,7 +39,7 @@ const ROOT = '/box'
 function world(on: On, agent: string | undefined, clock?: { sleep: (ms: number) => Promise<void> }, root: string | null = ROOT): World {
   const w: World = {
     mail: {}, runs: [], stdin: [], lists: [], prompts: [], origins: [], aborts: [], sessionId: 'session-1',
-    isPaused: false, isDropping: false, isConflict: false, canAbort: true, gate: { ok: true, start: true },
+    isPaused: false, isDropping: false, isConflict: false, canAbort: true, forced: { ok: true, start: true }, gate: { ok: true, start: true },
     decision: 'allow', claimDelayMs: 0, hold: false, release: () => undefined,
     checks: [], argv: [], check: undefined, stats: {}, statted: [], tools: [], logs: [],
   }
@@ -97,7 +98,7 @@ function world(on: On, agent: string | undefined, clock?: { sleep: (ms: number) 
     w.stdin.push(e.init?.stdin ?? '')
     let answer: Record<string, unknown> = { ok: true }
     if (args[0] === 'heartbeat') answer = { ok: true, conflict: w.isConflict }
-    if (args[0] === 'begin') answer = args.includes('--force') ? { ok: true, start: true } : w.gate
+    if (args[0] === 'begin') answer = args.includes('--force') ? w.forced : w.gate
     if (args[0] === 'reply') answer = { ok: true, state: args[args.indexOf('--state') + 1] }
     if (args[0] === 'claim') {
       if (w.claimDelayMs > 0 && clock !== undefined) await clock.sleep(w.claimDelayMs)
@@ -543,4 +544,154 @@ test('a mailbox directory that is a link is not listed or claimed from', async (
   expect(w.prompts.length).toBe(0)
   expect(verbs(w)).not.toContain('claim')
   expect(w.lists.length).toBe(0)
+})
+
+const USER = (text: string) => ({ text, origin: { kind: 'composer' }, wait: false }) as never
+
+test('R2-F1 a user turn that mentions the pending id is not the delivery; the real one is still gated once', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder')
+  w.hold = true
+  await $.session.start(START)
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(5_000)
+  const delivery = w.prompts[0] ?? ''
+  expect(delivery).toContain('delivery_token: ')
+  for (const text of ['message_id: m-00000001', 'tell me about message_id: m-00000001 please', delivery.split('\ndelivery_token')[0] ?? '']) {
+    await $.turn.start({ text, turnId: 'user' })
+    await $.turn.complete(DONE('user'))
+  }
+  expect(count(w, 'begin')).toBe(0) // not marked started
+  expect(w.aborts).toEqual([]) // and the user's turns were not withdrawn
+  await $.turn.start({ text: delivery, turnId: 'mail' })
+  expect(last(w, 'begin')).toEqual(['begin', '--agent', 'builder', '--session', 'session-1', '--id', 'm-00000001'])
+  expect(count(w, 'begin')).toBe(1)
+})
+
+test('R2-F1 the token arriving in a prompt that is not the plugin\'s own disqualifies text matching', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder')
+  w.hold = true
+  await $.session.start(START)
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(5_000)
+  const delivery = w.prompts[0] ?? ''
+  const letGo = w.release
+  w.hold = false
+  w.gate = { ok: true, start: false, revocable: true, reason: 'paused' } // even paused, the user's turn is untouched
+  await $.prompt.submit(USER(delivery)) // the user pasted the whole thing
+  await $.turn.start({ text: delivery, turnId: 'user-paste' })
+  expect(count(w, 'begin')).toBe(0)
+  expect(w.aborts).toEqual([])
+  await $.turn.complete(DONE('user-paste'))
+  w.gate = { ok: true, start: true }
+  letGo() // the real delivery starts; only the submit call can now vouch for it
+  await clock.advance(1_000)
+  expect(count(w, 'begin')).toBe(1)
+  expect(w.aborts).toEqual([])
+})
+
+test('R2-F1 a claim answer that arrives after the session moved on is released, never submitted', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder', clock)
+  w.claimDelayMs = 8_000
+  await $.session.start(START)
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(5_000) // the claim is in flight
+  await $.session.end(END('clear'))
+  w.sessionId = 'session-2'
+  await clock.advance(10_000)
+  expect(w.prompts.length).toBe(0)
+  expect(last(w, 'release').slice(0, 7)).toEqual(['release', '--agent', 'builder', '--session', 'session-1', '--id', 'm-00000001'])
+  expect(count(w, 'begin')).toBe(0)
+})
+
+for (const canAbort of [true, false]) {
+  test(`R2-F1 an old queued prompt that fires after /clear is not a delivery (abort ${canAbort ? 'honoured' : 'refused'})`, async ($, on) => {
+    const clock = mock.clock(on)
+    const w = world(on, 'builder')
+    w.hold = true
+    w.canAbort = canAbort
+    await $.session.start(START)
+    w.mail.builder = ['m-00000001.json']
+    await clock.advance(5_000)
+    await $.session.end(END('clear'))
+    w.sessionId = 'session-2'
+    await clock.advance(5_000)
+    w.release() // the engine now runs the prompt queued by the old conversation
+    await $.turn.start({ text: w.prompts[0] ?? '', turnId: 'old' })
+    await clock.advance(2_000)
+    expect(count(w, 'begin')).toBe(0) // never marked started as a delivery
+    expect(w.aborts).toEqual(canAbort ? ['old'] : [])
+    expect(last(w, 'stray').slice(0, 9)).toEqual(['stray', '--agent', 'builder', '--session', 'session-2', '--id', 'm-00000001', '--aborted', canAbort ? '1' : '0'])
+    await $.turn.start({ text: w.prompts[0] ?? '', turnId: 'again' })
+    expect(count(w, 'stray')).toBe(1) // handled once
+  })
+}
+
+test('R2-F1 after real shutdown an old prompt that still fires is withdrawn and nothing is written', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder')
+  w.hold = true
+  await $.session.start(START)
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(5_000)
+  await $.session.end(END('other'))
+  const after = w.runs.length
+  w.release()
+  await $.turn.start({ text: w.prompts[0] ?? '', turnId: 'old' })
+  await clock.advance(2_000)
+  expect(w.aborts).toEqual(['old'])
+  expect(w.runs.length).toBe(after)
+})
+
+test('R2-F4 expired and the engine refuses the abort: recorded as a forced start with the reason, not hidden', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder')
+  w.hold = true
+  w.canAbort = false
+  await $.session.start(START)
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(5_000)
+  w.gate = { ok: true, start: false, revocable: true, reason: 'expired' }
+  await $.turn.start({ text: w.prompts[0] ?? '', turnId: 't1' })
+  expect(last(w, 'begin')).toEqual(['begin', '--agent', 'builder', '--session', 'session-1', '--id', 'm-00000001', '--force', '--note', 'expired'])
+  expect(verbs(w)).not.toContain('release')
+})
+
+test('R2-F4 helper unavailable and abort refused: the running turn stays owed, blocks new claims, and is recorded when the helper returns', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder')
+  w.hold = true
+  w.canAbort = false
+  await $.session.start(START)
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(5_000)
+  w.gate = { ok: false, error: 'EIO' }
+  w.forced = { ok: false, error: 'EIO' }
+  await $.turn.start({ text: w.prompts[0] ?? '', turnId: 't1' })
+  expect(w.aborts).toEqual([])
+  expect(w.runs.filter(run => run.includes('--force')).length).toBe(1)
+  await $.turn.complete(DONE('t1'))
+  w.hold = false
+  w.mail.builder = ['m-00000002.json']
+  await clock.advance(30_000)
+  expect(count(w, 'claim')).toBe(1) // nothing new while one start is unrecorded
+  expect(w.runs.filter(run => run.includes('--force')).length).toBeGreaterThan(3) // retried every tick
+  expect(last(w, 'heartbeat').slice(-2)).toEqual(['--pending', 'm-00000001']) // and not re-queued meanwhile
+  w.forced = { ok: true, start: true }
+  await clock.advance(10_000)
+  expect(count(w, 'claim')).toBe(2)
+})
+
+test('R2-F4 fallback ordering: with no turn id the mod cannot withdraw, so a refused start is recorded as forced', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, 'builder')
+  await $.session.start(START)
+  w.gate = { ok: true, start: false, revocable: true, reason: 'paused' }
+  w.mail.builder = ['m-00000001.json']
+  await clock.advance(6_000) // the submit call resolved; no turn.start identified the delivery
+  expect(w.aborts).toEqual([])
+  expect(last(w, 'begin')).toContain('--force')
+  expect(verbs(w)).not.toContain('release')
 })

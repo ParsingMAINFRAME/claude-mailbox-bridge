@@ -1,41 +1,49 @@
-# claude-mailbox-bridge
+# Claude Mailbox Bridge
 
-A local file mailbox that lets an external agent, bot or script send instructions to a Claude Code terminal session and read that session's replies.
+**File in. Work handed off. Reply out.**
 
-- A sender writes a small JSON file into a mailbox directory (or runs `bridge.py send`).
-- A Claude Code mod (a function-hooks plugin named `session-mailbox`) running inside the addressed session notices the file, waits until the session is idle, and starts a turn with the message, clearly marked as another agent's message and not as the user's.
-- When Claude answers through the mod's reply tool, the answer is written back as files the sender can read.
+Give an open Claude Code session a local mailbox. A bot or script queues a request;
+Claude takes it at an idle point and writes acknowledgement and completion replies.
+The sender reads those replies on its own schedule.
 
-The use case it was built for: a Dot (one of OpenAI's personal assistants) hands work to a Claude Code session on the same machine and later picks up the result. Nothing in it is specific to Dots. Anything that can write and read local files can be a sender: another assistant, a script, a cron job.
+![Architecture: external sender to local mailbox to Claude Code and reply files](docs/architecture.svg)
 
-**It wakes Claude Code sessions only.** It does not wake a Dot or any other sender. A sender reads its replies when its own authorized local task next runs; no incoming-message endpoint for Dots has been verified, and none is used here.
+- **Local handoff:** configurable mailbox directory, agent names, and turn limits.
+- **Session ownership:** one live receiver per mailbox, with correlated message and reply IDs.
+- **Recoverable state:** bounded records, atomic file publication, and crash reconciliation.
+- **Explicit permission:** peer messages cannot approve work; the reply tool requires an allow rule.
 
-This is an independent project. It is not affiliated with, endorsed by or supported by Anthropic or OpenAI.
+There is no automatic wake-up for the external sender. This package has no verified
+incoming-message endpoint for a Dot or another assistant. Your own authorized job
+checks replies. It is an independent project, unaffiliated with Anthropic or OpenAI.
 
 ## Status: experimental
 
-The helper and the mod's logic are covered by automated tests (see [Tests](#tests)). Those tests run against throwaway directories and against stand-ins for the Claude Code engine. **This version has not been loaded into a real Claude Code session.** In particular, these behaviours are not yet verified in a real session:
+The generic package passes local filesystem tests, mocked hook tests, and offline
+stream-validator tests. See [release evidence](docs/release-evidence.md) for exact
+versions, counts, and limits. Static validation and mocked tests start no model turn.
 
-- **Turn withdrawal at turn start.** When a claimed message is paused or expires while its prompt waits, the mod asks the engine to abort that turn as it starts. Whether the engine honours an abort issued at that moment is unknown. If it does not, the turn runs and the message is recorded `submitted` with the note "could not be withdrawn".
-- **`/clear`, `/resume` and `/branch` handling.** The mod is written to keep listening under the new session id. Whether it does, and what happens to a prompt already queued at that instant, is unknown.
-- **The permission check for replies.** The mod writes a reply only when the engine's own permission decision for the reply tool is `allow`. What that check returns with and without `--allowedTools`, and after a one-time approval in a dialog, is unknown.
-- **The quickstart below as written.** The commands follow the same shape as the earlier version's, but this configuration (environment-variable root, `config.json`) has only been exercised by the automated tests.
+**This generic package has not completed a real-session trial.** A private predecessor
+observed acknowledgement and completion in a disposable idle session, and refusal
+without the reply allow rule. That observation is not proof of this package's
+configurable root or quickstart. Do not publish a live-demo success claim until the
+[real-session checklist](docs/real-session-trial.md) is completed on the release commit.
 
-The one real-session fact: an earlier version of this code woke an idle headless Claude Code session and recorded `acknowledged` and `completed` replies for a message.
-
-[docs/real-session-trial.md](docs/real-session-trial.md) is a plan for settling the unknowns. It has not been run. Until it has, treat every statement here about what the engine does as the design's intent, not as an observation.
+Withdrawal at turn start and conversation changes with queued mail remain unverified
+in a real session. An abort request can be refused; a forced or stray start is recorded
+instead. Pause stops new claims, and does not stop a turn already running.
 
 ## Requirements
 
-- Claude Code 2.1.287 or newer, with mods (function-hooks plugins) available and the workspace trusted. The plugin API is early access and may change between releases.
-- Python 3.10 or newer on `PATH` as `python3`. Standard library only. The test suite was run on 3.10 through 3.14.
+- Claude Code with function-hooks mods enabled and the workspace trusted. The local validation target is **2.1.287**; account rollout can affect availability. Other CLI versions are unverified, and the early API can change.
+- Python 3.10 or newer on `PATH` as `python3`. Standard library only. Current release checks use Python 3.14; CI is configured for 3.10 and 3.13.
 - macOS or Linux. The helper uses `fcntl` file locks, so there is no native Windows support (WSL is untested). Developed and tested on macOS only; Linux is expected to work and is exercised only by the CI workflow, which has not yet run.
 - A local filesystem for the mailbox root. File locking on network or synced folders is not covered.
 
 ## Quickstart
 
 ```sh
-git clone <this repository> claude-mailbox-bridge
+git clone https://github.com/ParsingMAINFRAME/claude-mailbox-bridge.git
 cd claude-mailbox-bridge
 export CLAUDE_MAILBOX_ROOT="$HOME/mailbox"
 
@@ -52,6 +60,10 @@ CLAUDE_MAILBOX_ROOT="$HOME/mailbox" CLAUDE_MAILBOX_AGENT=worker \
          --allowedTools mcp__session-mailbox__mailbox_reply
 ```
 
+The repository URL is the intended public destination; publication is pending.
+Use a local checkout until the release is published. For the receive command, replace
+`/path/to/claude-mailbox-bridge/mod` with the absolute path of that checkout.
+
 The transcript should show `active for "worker"`. Read [What activating the mod authorizes](#what-activating-the-mod-authorizes) before you do this: starting the session this way is the consent.
 
 From any other terminal, script or bot:
@@ -60,7 +72,7 @@ From any other terminal, script or bot:
 # 3. Send an instruction.
 python3 bridge.py send --from bot --to worker --subject "hello" --body "Reply with the word pong."
 
-# 4. Watch its state, then read the replies.
+# 4. Watch its state, then read replies addressed to the sender.
 python3 bridge.py status --agent worker
 python3 bridge.py inbox --agent bot
 ```
@@ -91,7 +103,7 @@ Everything the bridge touches is under one directory you choose, the **mailbox r
 
 - `agents`: every name that may appear as `from` or `to`. A `session` agent is a Claude Code session the mod can wake. A `reader` agent is anything else: it is never woken and reads its mail itself. Names are 1 to 32 lower-case letters, digits and dashes; `all` is reserved; at most 32 agents.
 - `limits` (optional, each with a hard range): `turns_per_hour` 1 to 60, `turns_per_day` 1 to 1000, `max_attempts` 1 to 10, `default_ttl_minutes` 1 to 10080. The limits apply to each session agent separately.
-- Fixed, not configurable: a message is at most 64 KB and expires at most 7 days after creation; presence goes stale after 90 seconds; the mod polls every 5 seconds.
+- Fixed, not configurable: a message is at most 64 KB and expires at most 7 days after creation; presence goes stale after 90 seconds; the mod polls every 5 seconds. State records are capped at 48 KB, subjects at 512 UTF-8 bytes, notes at 200 bytes, history at 40 entries, and stray-start records at five.
 
 A session picks its agent with `CLAUDE_MAILBOX_AGENT`. One live session per agent.
 
@@ -116,6 +128,7 @@ python3 $B status --agent worker
 python3 $B inbox --agent bot                   # replies addressed to bot (reconciles its mailbox)
 python3 $B inbox --agent bot --archive         # same, then files them under closed/
 python3 $B fsck                                # reconcile every mailbox and list what needs a person
+python3 $B fsck --agent worker                 # reconcile only this recipient
 python3 $B resolve --id <id> --state blocked --note "why"   # a person closes a message nobody can finish
 ```
 
@@ -147,7 +160,7 @@ Rules, applied to hand-written files exactly as to `send`:
 - The file is named `<id>.json` and placed in `mail/<to>/new/`. `to` must be the mailbox it is in; `from` and `to` must be agents in `config.json`.
 - `kind` is `instruction` to ask for work. `ack`, `reply` and `status` are filed and never start a turn.
 - Timestamps are ISO 8601 with a UTC offset (`Z`). `expires_utc` is after `created_utc` by at most 7 days; `created_utc` is not more than 5 minutes in the future.
-- At most 64 KB, a regular file, valid UTF-8 JSON.
+- At most 64 KB, a regular file, valid UTF-8 JSON; subject at most 512 UTF-8 bytes.
 - The file must be complete before it appears: write it in `mail/<to>/tmp/` on the same filesystem, then rename or hard-link it into `mail/<to>/new/`.
 
 A file that breaks a rule is moved to `mail/<to>/rejected/` with a `.reason.json` beside it. Its content is never shown to a model.
@@ -218,7 +231,7 @@ So pause is not "stop everything immediately". After pausing, read `status`: any
 
 **Busy sessions** are not interrupted. The mod claims nothing while a main turn runs, and Claude Code is expected to hold a mod's prompt until the session is idle. One message per turn.
 
-**No model call when nothing changes.** Each 5-second tick is one session-id read and directory listings. The helper process runs for the 30-second heartbeat and when mail is present; claims that deliver nothing back off from 5 s to 60 s. This is polling inside the session: there is no daemon, background service, network listener or terminal automation.
+**No model call when nothing changes.** Each 5-second tick is one session-id read and directory listings. The helper process runs for the 30-second heartbeat and when mail is present; claims that deliver nothing back off from 5 s to 60 s. This is polling inside the session; it adds no standalone daemon or persistent service. The registered reply tool uses Claude Code's temporary localhost transport (127.0.0.1, ephemeral port, randomized secret URL). Do not expose or publish that URL. No public endpoint or terminal automation is added.
 
 **Limits.** By default 6 automated turns per rolling hour and 40 per rolling day per session agent. A turn is charged when the message is claimed, in the same record that changes its state, so a reply arriving before the "started" mark cannot escape the charge. A claim that was withdrawn, abandoned or ambiguous stays charged; only a prompt the session refused outright is refunded. An unreadable state record is counted as `max_attempts` charges. If state cannot be read or written, nothing is claimed. Each automated turn uses your Claude usage like any other turn; the limits are the only cost control here.
 
@@ -226,11 +239,13 @@ So pause is not "stop everything immediately". After pausing, read `status`: any
 
 **Conversation changes.** On `/clear`, `/resume` and `/branch` the process continues under a new session id with no new start event. The mod is written to keep its timer, give back whatever the old id had claimed but not started, and carry on under the new id (**not yet verified in a real session**). A message the old conversation had already started can no longer be answered by the new one (different session id); it stays `submitted`/`acknowledged` until a person runs `resolve`. On real exit the timer is cancelled and presence is marked offline; if the process is killed, presence goes offline after 90 s.
 
+**Prompt bookkeeping.** A random delivery token and the full submitted frame identify a mailbox turn. If a user or another plugin quotes that token, text matching is disqualified. Old queued frames are tracked in a bounded list; late starts are withdrawn when possible and recorded as stray starts. A failed forced-start write blocks new claims until it is recorded. This is accident prevention, not sender authentication.
+
 **Loop prevention.** Only `kind: instruction` starts a turn. The mod never sends instructions; replies are `ack`/`reply` and are filed without waking anyone, in both directions.
 
 ## Security model
 
-**A mod runs with your permissions and is not sandboxed.** Claude Code does not sandbox mods. This one runs inside your session as you, and the helper it starts is an ordinary Python process running as you. Read `mod/hooks/register.ts` and `bridge.py` before you load them; together they are about 1,300 lines.
+**A mod runs with your permissions and is not sandboxed.** Claude Code does not sandbox mods. This one runs inside your session as you, and the helper it starts is an ordinary Python process running as you. Read `mod/hooks/register.ts` and `bridge.py` before activation to understand their filesystem and session behavior.
 
 **Filesystem scope.** Paths are built under the mailbox root from validated components; symlinked directories and files, traversal, non-regular and oversize files are refused. This is not a security boundary against your own user account: a same-user process could swap a directory between the check and the use. The design assumes the root and its parents are not being maliciously replaced.
 
@@ -241,13 +256,14 @@ So pause is not "stop everything immediately". After pausing, read `status`: any
 Starting a session with `--plugin-dir .../mod` and `CLAUDE_MAILBOX_AGENT` set is the consent. From then on, without any further prompt, that session will:
 
 - read `CLAUDE_MAILBOX_AGENT` and `CLAUDE_MAILBOX_ROOT`, and list `<root>/mail/<agent>/new` and `<root>/control` every 5 seconds;
-- run `python3 bridge.py --root <root> ...` (check, heartbeat, claim, begin, release, offline, status, pause, resume), which writes only under the root;
+- run `python3 bridge.py --root <root> ...` (check, heartbeat, claim, begin, stray, release, offline, status, pause, resume), which writes only under the root;
 - start a turn in that session for each valid instruction addressed to it, within the limits above, with the text marked as another agent's message that is not the user's approval;
-- withdraw one of its own mailbox turns at its start when paused or expired.
+- request withdrawal of its own mailbox turn at start when paused or expired, and record a forced or stray start if withdrawal fails;
+- register the reply tool through Claude Code's temporary localhost transport.
 
 **Replies need a separate, explicit allow.** The reply tool's hook answers the call itself, so Claude Code shows no permission dialog for it. The mod therefore asks the engine's own permission decision (`$.tool.check`) and writes a reply only when that decision is `allow`. With no allow rule, an `ask` or `deny` result, or a failed check, nothing is written and Claude is told so. To permit replies, launch with `--allowedTools mcp__session-mailbox__mailbox_reply` (that session only). Whether the engine returns `allow` for a call the user approved once in a dialog is not verified; rely on the launch flag.
 
-Everything Claude does *because of* a message (edits, commands, pushes) still goes through that session's normal permission prompts and rules. A message cannot approve anything. The mod and helper read no credentials, add no API key or billing, make no network call and change no settings.
+Everything Claude does *because of* a message (edits, commands, pushes) still goes through that session's normal permission prompts and rules. A message cannot approve anything. The mod and helper read no credentials, add no API key or billing, and change no persistent settings. The file helper makes no network call. Claude Code still uses its normal model connection and temporary localhost tool transport.
 
 ## Controls
 
@@ -272,6 +288,8 @@ Note that `--plugin-dir` watches the folder and hot-reloads on edits: do not edi
 
 ```sh
 python3 test_bridge.py        # helper on throwaway directories, incl. fault injection
+python3 test_session_report.py # every-turn stream scope checks; no Claude process
+python3 test_sender_examples.py # disposable scripted receiver; no Claude process
 claude plugin validate mod    # static: what the engine reads from the mod
 claude plugin test mod        # the mod's hooks with files, helper, clock and prompts mocked
 ```

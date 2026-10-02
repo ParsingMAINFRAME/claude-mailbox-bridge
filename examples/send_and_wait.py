@@ -61,12 +61,14 @@ def send(root, sender, to, subject, body, ttl_minutes):
     return message_id
 
 
-def replies_to(root, sender, message_id):
+def replies_to(root, sender, recipient, message_id):
     found = {}
     for place in ("new", "closed"):
         for path in sorted((root / "mail" / sender / place).glob("r-*.json")):
             reply = read_json(path)
-            if reply and reply.get("in_reply_to") == message_id:
+            if (reply and reply.get("in_reply_to") == message_id and
+                    reply.get("correlation_id") == message_id and
+                    reply.get("from") == recipient and reply.get("to") == sender):
                 found[reply["id"]] = reply
     return sorted(found.values(), key=lambda reply: reply.get("created_utc", ""))
 
@@ -106,9 +108,17 @@ def main():
             break
         time.sleep(2)
 
-    for reply in replies_to(root, args.sender, message_id):
+    replies = replies_to(root, args.sender, args.to, message_id)
+    for reply in replies:
         print(f"--- {reply.get('reply_state')} ({reply['id']}) ---\n{reply.get('body', '')}")
-    return 0 if last == "completed" else 1
+    states = {reply.get("reply_state") for reply in replies}
+    if last == "completed" and {"acknowledged", "completed"} <= states:
+        return 0
+    if last not in DONE:
+        print("wait deadline reached; delivery is still pending. Inspect status before retrying.", file=sys.stderr)
+    elif last == "completed":
+        print("completed state lacks both correlated reply files", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

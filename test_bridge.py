@@ -38,10 +38,13 @@ class BridgeTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def call(self, *argv, fail_at=None):
+    def call(self, *argv, fail_at=None, fault_op=None):
         """(parsed answer or None, exit status). Exit 99 is an injected process death."""
         env = dict(os.environ, BRIDGE_FAKE_NOW=self.clock)
         env.pop("BRIDGE_FAIL_AT", None)
+        env.pop("BRIDGE_FAULT", None)
+        if fault_op:
+            env["BRIDGE_FAULT"] = fault_op
         env.pop("CLAUDE_MAILBOX_ROOT", None)
         if fail_at:
             env["BRIDGE_FAIL_AT"] = fail_at
@@ -696,6 +699,89 @@ class BridgeTest(unittest.TestCase):
         self.assertIsNone(self.claim("builder", "s1")["message"])
         self.assertEqual((self.budget("builder")["used_last_hour"], self.budget("reviewer")["used_last_hour"]), (1, 1))
         self.assert_consistent()
+
+
+
+    def test_short_write_completes_before_message_is_published(self):
+        answer, status = self.call("send", "--from", "bot", "--to", "builder", "--body", "x" * 10000, fault_op="write:1:shortok")
+        self.assertEqual(status, 0, answer)
+        body = json.loads((self.root / "mail/builder/new" / (answer["id"] + ".json")).read_text())
+        self.assertEqual(body["body"], "x" * 10000)
+        self.assert_consistent()
+
+    def test_partial_write_fsync_and_link_failures_publish_no_partial_message(self):
+        for fault_op in ("write:1:short", "fsync:1", "link:1"):
+            with self.subTest(fault_op=fault_op):
+                answer, status = self.call("send", "--from", "bot", "--to", "builder", "--body", "x" * 10000, fault_op=fault_op)
+                self.assertNotEqual(status, 0)
+                self.assertEqual(list((self.root / "mail/builder/new").glob("*.json")), [])
+                self.assertEqual(list((self.root / "mail/builder/new").glob(".tmp-*")), [])
+
+    def test_subject_bound_is_utf8_bytes_and_bad_message_never_delivers(self):
+        message = self.send(subject="é" * 256)
+        self.assertEqual(self.claim()["message"]["id"], message)
+        self.refused("send", "--from", "bot", "--to", "builder", "--body", "x", "--subject", "é" * 257)
+
+    def test_forced_start_and_stray_are_visible_without_overwriting_completion(self):
+        message = self.send()
+        self.claim()
+        self.ok("pause", "--agent", "builder")
+        self.begin(message, "builder", "s1", "--force", "--note", "paused\n" + "é" * 300)
+        forced = self.record(message)["forced_start"]
+        self.assertEqual(forced["skipped_checks"], ["paused"])
+        self.assertLessEqual(len(forced["reason"].encode()), 200)
+        self.assertNotIn("\n", forced["reason"])
+        self.reply(message, "completed")
+        self.ok("stray", "--agent", "builder", "--session", "s2", "--id", message, "--aborted", "1", "--note", "late old prompt")
+        self.assertEqual(self.state(message), "completed")
+        status = self.ok("status", "--agent", "builder")["messages"][0]
+        self.assertEqual(status["stray_starts"][0]["aborted"], True)
+        self.assertEqual(status["forced_start"]["skipped_checks"], ["paused"])
+        for _ in range(6):
+            self.ok("stray", "--agent", "builder", "--session", "s2", "--id", message, "--aborted", "1")
+        self.assertEqual(len(self.record(message)["stray_starts"]), 5)
+        self.assertEqual(self.state(message), "completed")
+
+    def test_recipient_fsck_does_not_reconcile_another_recipient(self):
+        message = self.send(to="reviewer")
+        before = self.record(message)
+        damaged = self.root / "mail/reviewer/new/broken.json"
+        damaged.write_text("{")
+        self.ok("fsck", "--agent", "builder")
+        self.assertEqual(damaged.read_text(), "{")
+        self.assertEqual(self.record(message), before)
+        self.refused("fsck", "--agent", "unknown")
+
+    def test_oversize_state_write_preserves_the_old_record(self):
+        import bridge
+        old_root = bridge.ROOT
+        bridge.ROOT = self.root
+        try:
+            directory = bridge.safe_dir("state")
+            bridge.write_replace(directory, "m-state-size.json", {"preserved": True})
+            with self.assertRaises(bridge.Refused):
+                bridge.write_replace(directory, "m-state-size.json", {"data": "x" * (48 * 1024)})
+            self.assertEqual(json.loads((directory / "m-state-size.json").read_text()), {"preserved": True})
+            self.assertEqual(list(directory.glob(".tmp-*")), [])
+        finally:
+            bridge.ROOT = old_root
+
+    def test_history_stays_bounded_preserving_first_and_latest(self):
+        import bridge
+        old_root = bridge.ROOT
+        bridge.ROOT = self.root
+        try:
+            record = {"id": "m-bounded-history", "state": None, "history": []}
+            for number in range(60):
+                bridge.save_state(record, "queued" if number % 2 == 0 else "claimed", "builder", "é" * 300)
+            stored = json.loads((self.root / "state/m-bounded-history.json").read_text())
+            self.assertEqual(len(stored["history"]), 40)
+            self.assertEqual(stored["history_dropped"], 20)
+            self.assertEqual(stored["history"][0]["state"], "queued")
+            self.assertEqual(stored["history"][-1]["state"], "claimed")
+            self.assertTrue(all(len(h["note"].encode()) <= 200 for h in stored["history"]))
+        finally:
+            bridge.ROOT = old_root
 
 
 if __name__ == "__main__":

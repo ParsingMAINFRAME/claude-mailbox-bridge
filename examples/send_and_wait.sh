@@ -20,10 +20,14 @@ SENDER=$1
 TO=$2
 BODY=$3
 WAIT_SECONDS=${WAIT_SECONDS:-300}
+case "$WAIT_SECONDS" in
+  *[!0-9]*) echo "WAIT_SECONDS must be a non-negative integer" >&2; exit 2 ;;
+esac
 
 field() { python3 -c 'import json, sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1"; }
 
-ID=$(python3 "$BRIDGE" send --from "$SENDER" --to "$TO" --subject "example" --ttl-minutes 60 --body "$BODY" | field id)
+SENT=$(python3 "$BRIDGE" send --from "$SENDER" --to "$TO" --subject "example" --ttl-minutes 60 --body "$BODY")
+ID=$(printf '%s\n' "$SENT" | field id)
 echo "sent $ID; queued is not delivered"
 
 STATE=queued
@@ -41,5 +45,21 @@ print(next((m["state"] for m in json.load(sys.stdin)["messages"] if m["id"] == w
 done
 
 # Replies addressed to the sender. Add --archive to file them under closed/ once read.
-python3 "$BRIDGE" inbox --agent "$SENDER"
-[ "$STATE" = completed ]
+if [ "$STATE" != completed ]; then
+  echo "delivery has not completed; inspect status before retrying" >&2
+fi
+python3 "$BRIDGE" inbox --agent "$SENDER" | python3 -c '
+import json, sys
+report = json.load(sys.stdin)
+wanted, recipient, sender = sys.argv[1:4]
+messages = [m for m in report.get("messages", [])
+            if m.get("in_reply_to") == wanted and m.get("correlation_id") == wanted
+            and m.get("from") == recipient and m.get("to") == sender]
+print(json.dumps(messages, indent=2))
+states = {m.get("reply_state") for m in messages}
+sys.exit(0 if {"acknowledged", "completed"} <= states else 1)
+' "$ID" "$TO" "$SENDER"
+if [ "$STATE" != completed ]; then
+  echo "delivery has not completed; inspect status before retrying" >&2
+  exit 1
+fi
