@@ -19,19 +19,29 @@ checks replies. It is an independent project, unaffiliated with Anthropic or Ope
 
 ## Status: experimental
 
-The generic package passes local filesystem tests, mocked hook tests, and offline
-stream-validator tests. See [release evidence](docs/release-evidence.md) for exact
-versions, counts, and limits. Static validation and mocked tests start no model turn.
+**A fresh isolated headless session completed a real round trip on commit
+`8b87315f65b45dc3624c97114c19d270e9d131e1`.** On Claude Code 2.1.287 with an
+existing Claude Max login, the generic `worker` received one instruction and
+wrote acknowledgement and completion files correlated to its message ID.
+Both startup reports passed scope checks. The child exited normally after 13.4
+seconds; no signals or processes remained, and the mailbox was empty and offline.
 
-**This generic package has not completed a real-session trial.** A private predecessor
-observed acknowledgement and completion in a disposable idle session, and refusal
-without the reply allow rule. That observation is not proof of this package's
-configurable root or quickstart. Do not publish a live-demo success claim until the
-[real-session checklist](docs/real-session-trial.md) is completed on the release commit.
+The filesystem helper, mocked hooks, sender examples, and every-turn stream
+validator also pass local tests. See [release evidence](docs/release-evidence.md)
+and the [public-safe proof summary](docs/real-session-proof.json) for exact scope.
+The subsequent evidence/documentation commit keeps the tested runtime hashes.
 
-Withdrawal at turn start and conversation changes with queued mail remain unverified
-in a real session. An abort request can be refused; a forced or stray start is recorded
-instead. Pause stops new claims, and does not stop a turn already running.
+This proves the fresh-session, configurable-root headless workflow. The normal
+interactive quickstart, the no-allow permission trial on this generic package,
+connecting an already-open conversation, and pause/expiry or conversation-change
+races remain unverified. A private predecessor observed reply refusal without an
+allow rule; that fact is not substituted for a generic-package permission trial.
+
+An abort request can be refused; a forced or stray start is recorded instead.
+Pause stops new claims and does not stop a running turn. Follow the
+[real-session checklist](docs/real-session-trial.md) for further approved trials.
+The proposed [existing-terminal attachment feature](docs/future-terminal-attachment.md)
+is recorded as future work.
 
 ## Requirements
 

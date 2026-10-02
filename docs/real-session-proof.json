@@ -1,0 +1,52 @@
+{
+  "tested_commit": "8b87315f65b45dc3624c97114c19d270e9d131e1",
+  "trial": "fresh isolated headless B",
+  "started_utc": "2026-10-02T19:29:50Z",
+  "ended_utc": "2026-10-02T19:30:04Z",
+  "verdict": "passed",
+  "message_id": "m-20261002t192951z-181ecb9a662a",
+  "final_state": "completed",
+  "turn_started": true,
+  "forced_start": false,
+  "stray_start_count": 0,
+  "reply_states": [
+    "acknowledged",
+    "completed"
+  ],
+  "reply_sender": "worker",
+  "reply_recipient": "bot",
+  "all_reply_correlations_match": true,
+  "initialization_reports_checked": 2,
+  "invalid_initialization_reports": 0,
+  "zero_work_bootstrap_results": 1,
+  "mail_turn_results": 1,
+  "stream_violations": [],
+  "child_seconds": 13.4,
+  "child_exit_status": 0,
+  "stream_end": "eof",
+  "signals": [],
+  "left_running": 0,
+  "mailbox_after": {
+    "queued": 0,
+    "in_flight": 0,
+    "presence": "offline",
+    "used_last_hour": 1
+  },
+  "auth_route": "existing Claude Max login; first-party; no API-key source",
+  "limits": {
+    "work_sequences_per_rolling_hour": 6,
+    "work_sequences_per_rolling_day": 40
+  },
+  "scope": "only the package reply tool, isolated temporary mailbox and workspace",
+  "runtime_hashes": {
+    "bridge.py": "4df5f85b88b10d13888065598e03f6a3020d208057898567facebdaef475f984",
+    "mod/hooks/register.ts": "713bf539bcc4aa1185c59d26a30a93c4319c19713880d783f1efe51b28829723",
+    "validation/session_report.py": "fdc49f475a5823d252db9469eb5ea0ea0322c9c9a01908a0c5098cc4d30359a5"
+  },
+  "limitations": [
+    "Fresh headless session only; normal interactive quickstart and existing-session restart were not tested.",
+    "Permission-without-allow trial A was not run on this generic package.",
+    "Real withdrawal races and queued conversation changes remain untested.",
+    "External senders are not automatically woken."
+  ]
+}

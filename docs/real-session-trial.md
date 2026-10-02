@@ -1,4 +1,8 @@
-# Real-session release checklist — prepared, not run
+# Real-session release checklist
+
+A fresh isolated headless B trial passed on commit `8b87315`; see
+[release evidence](release-evidence.md). The interactive trials below, generic A,
+and the C/D race tests have not been run.
 
 A scripted receiver and a mocked engine cannot prove delivery to Claude. Complete
 this checklist on the exact release commit before claiming a working public demo.
