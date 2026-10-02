@@ -4,7 +4,8 @@ Date: 2026-10-02 UTC. Status: **offline validated; one fresh isolated real-sessi
 
 The real-session trial tested commit `8b87315f65b45dc3624c97114c19d270e9d131e1`.
 The later evidence/documentation commit preserves all tested runtime hashes.
-The local handoff reports its commit ID; runtime SHA-256 hashes are below.
+The runtime SHA-256 hashes below identify the exact tested code; release
+metadata/documentation commits leave them unchanged.
 
 ## Local checks
 
@@ -70,8 +71,10 @@ then this trial passed with the package unchanged.
 - The generic package's no-allow permission trial, real pause/expiry withdrawal,
   and conversation changes with queued mail remain unverified.
 - Sender example tests use a scripted receiver; they do not prove Claude delivery.
-- CI is prepared for macOS/Linux and Python 3.10/3.13; no hosted CI result is claimed.
-  Native Windows is unsupported; WSL and newer CLI versions are unverified.
+- CI covers the Python suites on macOS/Linux and Python 3.10/3.13. Hosted
+  results are separate from this local evidence: see the repository's tests
+  workflow. The real Claude trial was macOS-only; native Windows is unsupported,
+  and WSL and newer CLI versions are unverified.
 - Pattern scanning reduces accidental disclosure risk; it is not a guarantee of
   arbitrary secret detection. No runtime mailbox, transcript, raw log, credentials,
   game data, private review history, or generated CLI declarations are exported.

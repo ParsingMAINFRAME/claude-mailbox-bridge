@@ -1,5 +1,7 @@
 # Claude Mailbox Bridge
 
+[![tests](https://github.com/ParsingMAINFRAME/claude-mailbox-bridge/actions/workflows/tests.yml/badge.svg)](https://github.com/ParsingMAINFRAME/claude-mailbox-bridge/actions/workflows/tests.yml)
+
 **File in. Work handed off. Reply out.**
 
 Give an open Claude Code session a local mailbox. A bot or script queues a request;
@@ -15,7 +17,9 @@ The sender reads those replies on its own schedule.
 
 There is no automatic wake-up for the external sender. This package has no verified
 incoming-message endpoint for a Dot or another assistant. Your own authorized job
-checks replies. It is an independent project, unaffiliated with Anthropic or OpenAI.
+checks replies. Use a trusted local mailbox: sender labels are not authentication,
+and delivery is at least once rather than exactly-once execution. Make requests
+safe to repeat. This is an independent project, unaffiliated with Anthropic or OpenAI.
 
 ## Status: experimental
 
@@ -47,7 +51,7 @@ is recorded as future work.
 
 - Claude Code with function-hooks mods enabled and the workspace trusted. The local validation target is **2.1.287**; account rollout can affect availability. Other CLI versions are unverified, and the early API can change.
 - Python 3.10 or newer on `PATH` as `python3`. Standard library only. Current release checks use Python 3.14; CI is configured for 3.10 and 3.13.
-- macOS or Linux. The helper uses `fcntl` file locks, so there is no native Windows support (WSL is untested). Developed and tested on macOS only; Linux is expected to work and is exercised only by the CI workflow, which has not yet run.
+- The file helper targets macOS and Linux; CI covers both. The real Claude session trial ran on macOS only. Native Windows is unsupported because the helper uses `fcntl`; WSL is unverified.
 - A local filesystem for the mailbox root. File locking on network or synced folders is not covered.
 
 ## Quickstart
@@ -61,18 +65,14 @@ export CLAUDE_MAILBOX_ROOT="$HOME/mailbox"
 python3 bridge.py init --session worker --reader bot
 ```
 
-In the terminal where the Claude Code session will run:
+In a receiver terminal opened in this checkout:
 
 ```sh
 # 2. Start a session that serves the "worker" mailbox and may write replies.
 CLAUDE_MAILBOX_ROOT="$HOME/mailbox" CLAUDE_MAILBOX_AGENT=worker \
-  claude --plugin-dir /path/to/claude-mailbox-bridge/mod \
+  claude --plugin-dir "$(pwd -P)/mod" \
          --allowedTools mcp__session-mailbox__mailbox_reply
 ```
-
-The repository URL is the intended public destination; publication is pending.
-Use a local checkout until the release is published. For the receive command, replace
-`/path/to/claude-mailbox-bridge/mod` with the absolute path of that checkout.
 
 The transcript should show `active for "worker"`. Read [What activating the mod authorizes](#what-activating-the-mod-authorizes) before you do this: starting the session this way is the consent.
 
@@ -90,6 +90,30 @@ python3 bridge.py inbox --agent bot
 `send` answers `queued`, which is not delivered. When the session is idle the message goes `claimed`, `submitted`, then `acknowledged` and `completed` if Claude calls the reply tool. The replies are JSON files in `$CLAUDE_MAILBOX_ROOT/mail/bot/new/`.
 
 [examples/send_and_wait.sh](examples/send_and_wait.sh) does steps 3 and 4 with the command line; [examples/send_and_wait.py](examples/send_and_wait.py) does them by writing and reading the files directly.
+
+## Verified demo
+
+Recorded facts from the fresh isolated headless trial on commit `8b87315`:
+
+```text
+queued → claimed → submitted → acknowledged → completed
+worker → bot: one acknowledgement + one completion, matching message IDs
+normal exit: 0 · no signals · no remaining child-group processes
+```
+
+This is a textual summary of the real evidence, not a screenshot or simulated
+terminal recording. [Inspect the proof](docs/real-session-proof.json) and
+[its exact limits](docs/release-evidence.md). To try a harmless request with your
+own enabled receiver, run this from another terminal in the checkout:
+
+```sh
+export CLAUDE_MAILBOX_ROOT="$HOME/mailbox"
+WAIT_SECONDS=120 sh examples/send_and_wait.sh bot worker "Reply with pong; do no other work."
+```
+
+The sender checks only this request's correlated replies. A timeout leaves the
+request pending; inspect its state before retrying. The interactive commands are
+a starter recipe; the recorded test used a bounded isolated headless receiver.
 
 ## Configuration
 
